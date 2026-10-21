@@ -1,0 +1,30 @@
+{
+  "Bin_Basic": {
+    "file": "bin_basic.glb",
+    "rimY": 0.34,
+    "r": 0.14,
+    "outerR": 0.165,
+    "label": "標準垃圾桶"
+  },
+  "Bin_Small": {
+    "file": "bin_small.glb",
+    "rimY": 0.21080000000000002,
+    "r": 0.0868,
+    "outerR": 0.1023,
+    "label": "迷你垃圾桶"
+  },
+  "Bin_Recycle": {
+    "file": "bin_recycle.glb",
+    "rimY": 0.5,
+    "r": 0.12,
+    "outerR": 0.142,
+    "label": "資源回收桶"
+  },
+  "Mug": {
+    "file": "mug.glb",
+    "rimY": 0.104,
+    "r": 0.04,
+    "outerR": 0.05,
+    "label": "老闆的馬克杯"
+  }
+}

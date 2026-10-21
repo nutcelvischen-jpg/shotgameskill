@@ -1,0 +1,8 @@
+*.blend
+*.blend1
+_preview.png
+_shots/
+node_modules/
+scripts/package*.json
+.DS_Store
+__pycache__/

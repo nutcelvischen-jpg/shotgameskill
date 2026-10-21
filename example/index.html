@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>紙團投籃王</title>
+<!--
+  範例：辦公室紙團投籃（shotgameskill 教學範本）
+  結構：  ① CONFIG 關卡表（改這裡就能調難度）
+          ② 場景載入（Blender 匯出的 GLB；名稱結尾 _Bake 的材質 → MeshBasic）
+          ③ 物理（自己寫的彈道 + 在「目標的區域座標」做命中判定）
+          ④ 事件（電風扇、老闆巡視）  ⑤ 音樂/音效/配音  ⑥ UI 與流程
+  除錯參數：?lv=2（直接從第 3 關開始）  ?ev=boss,fan（強制事件）
+-->
+<style>
+:root{--ink:#fff;--accent:#ff9f43;--ok:#5fd38a;--bad:#ff6b6b}
+html,body{margin:0;height:100%;overflow:hidden;background:#222;font-family:-apple-system,"PingFang TC","Noto Sans TC",sans-serif;touch-action:none;user-select:none;-webkit-user-select:none}
+canvas{display:block}
+#hud{position:fixed;left:0;right:0;top:0;padding:12px 14px;color:var(--ink);pointer-events:none;text-shadow:0 1px 3px rgba(0,0,0,.7);display:flex;justify-content:space-between;font-size:15px}
+#hud b{font-size:17px}
+#power{position:fixed;right:14px;top:30%;width:16px;height:32%;background:rgba(0,0,0,.35);border:2px solid rgba(255,255,255,.6);border-radius:10px;overflow:hidden;pointer-events:none}
+#power i{position:absolute;left:0;right:0;bottom:0;height:0;background:var(--accent)}
+#wind{position:fixed;left:50%;top:56px;transform:translateX(-50%);color:#bfe9ff;font-size:20px;font-weight:800;text-shadow:0 1px 4px #000;pointer-events:none}
+#toast{position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);color:#fff;font-size:30px;font-weight:900;text-shadow:0 2px 10px #000;pointer-events:none;opacity:0;transition:opacity .25s;text-align:center;white-space:nowrap}
+#hold{position:fixed;right:18px;bottom:calc(24px + env(safe-area-inset-bottom));width:100px;height:100px;border-radius:50%;border:none;background:var(--accent);color:#fff;font-size:18px;font-weight:800;box-shadow:0 6px 0 #b8661b;display:none}
+#hold.on{transform:translateY(4px);box-shadow:0 2px 0 #b8661b}
+#boss{position:fixed;inset:0;pointer-events:none;background:radial-gradient(ellipse at 50% 120%,rgba(0,0,0,.0),rgba(0,0,0,.55));opacity:0;transition:opacity .3s}
+#msg{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(15,15,20,.78);color:#fff;text-align:center;padding:24px}
+#msg h1{font-size:30px;margin:0 0 10px}#msg p{font-size:16px;line-height:1.7;margin:4px 0 18px;max-width:440px}
+#msg button{font-size:18px;padding:12px 30px;border-radius:30px;border:none;background:var(--accent);color:#fff;font-weight:800}
+.hidden{display:none!important}
+#mute{position:fixed;left:12px;bottom:calc(16px + env(safe-area-inset-bottom));width:44px;height:44px;border-radius:50%;border:none;background:rgba(0,0,0,.45);color:#fff;font-size:20px}
+</style></head><body>
+<div id="hud"><span id="lvl"></span><span>投進 <b id="made">0</b> / <span id="need"></span>　剩 <b id="left"></b> 球</span></div>
+<div id="wind"></div><div id="power"><i></i></div><div id="boss"></div><div id="toast"></div>
+<button id="hold">按住<br>蓄力</button><button id="mute">🔊</button>
+<div id="msg"></div>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
+window.__errs=[];addEventListener('error',e=>window.__errs.push(String(e.message)));
+const $=s=>document.querySelector(s),clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const QS=new URLSearchParams(location.search);
+
+// ================================================================ ① CONFIG（改這裡調難度）
+// target：targets.json 的 key（Blender 端 write_meta 產生，含杯口高度/半徑）
+// dist：目標離玩家多遠（公尺）  throws/need：幾球要進幾球  moving：左右移動幅度
+// events：這關會發生的事件     hint：顯示拋物線預測
+const LEVELS=[
+ {name:'第 1 關｜熱身',     target:'Bin_Basic',  dist:1.8, throws:5, need:3, moving:0,   events:[],             hint:true,  intro:'瞄準垃圾桶，按住蓄力、放開丟出'},
+ {name:'第 2 關｜小垃圾桶', target:'Bin_Small',  dist:2.0, throws:5, need:3, moving:0,   events:['fan'],        hint:false, intro:'桶子變小了，還有人開電風扇'},
+ {name:'第 3 關｜資源回收', target:'Bin_Recycle',dist:2.1, throws:5, need:3, moving:.25, events:['boss'],       hint:false, intro:'回收桶在移動？老闆也在巡視'},
+ {name:'第 4 關｜老闆的杯子',target:'Mug',        dist:1.7, throws:6, need:2, moving:.35, events:['fan','boss'], hint:false, intro:'丟進老闆的咖啡杯……你確定？'},
+];
+const BALL_R=.035, G=9.8, LAUNCH=new THREE.Vector3(0,1.05,.15), ELEV=THREE.MathUtils.degToRad(38);
+
+// ================================================================ ② 場景
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);
+renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+document.body.prepend(renderer.domElement);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x2a2a30);
+scene.environment=new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(),.04).texture;scene.environmentIntensity=.6;
+const camera=new THREE.PerspectiveCamera(60,1,.01,30);
+function fit(){camera.aspect=innerWidth/innerHeight;camera.fov=camera.aspect<1?64:46;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);}
+addEventListener('resize',fit);fit();
+camera.position.set(0,1.3,.35);camera.lookAt(0,.25,-1.8);
+const hemi=new THREE.HemisphereLight(0xfff8ee,0x50504a,.6);scene.add(hemi);
+const sun=new THREE.DirectionalLight(0xfff4e6,1.6);sun.position.set(.4,3,.2);sun.castShadow=true;sun.shadow.mapSize.set(1024,1024);
+Object.assign(sun.shadow.camera,{left:-1.3,right:1.3,top:1.3,bottom:-2.5,near:.5,far:6});sun.target.position.set(0,0,-1.3);scene.add(sun,sun.target);
+// 烘焙過的地板不吃燈 → 另外放一片「只收影子」的透明平面，讓動態物件仍有影子
+const catcher=new THREE.Mesh(new THREE.PlaneGeometry(2.4,3.2).rotateX(-Math.PI/2),new THREE.ShadowMaterial({opacity:.3}));
+catcher.position.set(0,.002,-1.3);catcher.receiveShadow=true;scene.add(catcher);
+
+const loader=new GLTFLoader();
+async function glb(f){const g=(await loader.loadAsync('models/'+f)).scene;
+ g.traverse(o=>{if(!o.isMesh)return;
+  if(o.material.name.endsWith('_Bake'))o.material=new THREE.MeshBasicMaterial({map:o.material.map,toneMapped:false});
+  else{o.castShadow=true;o.receiveShadow=true;}});return g;}
+const META=await (await fetch('models/targets.json')).json();
+scene.add(await glb('room.glb'));
+
+// ================================================================ ③ 紙團與物理
+function paperBall(){const g=new THREE.IcosahedronGeometry(BALL_R,2),p=g.attributes.position,v=new THREE.Vector3();
+ for(let i=0;i<p.count;i++){v.fromBufferAttribute(p,i);v.multiplyScalar(1+(Math.random()-.5)*.35);p.setXYZ(i,v.x,v.y,v.z);}
+ g.computeVertexNormals();const m=new THREE.Mesh(g,new THREE.MeshStandardMaterial({color:0xf4f1e8,roughness:.9,flatShading:true}));m.castShadow=true;return m;}
+let L=null,li=0,meta=null,target=null,state='menu',t=0;
+let made=0,left=0,charging=false,power=0,powT=0,aim=0,wind=0,ball=null,balls=[],next=0;
+const tmp=new THREE.Vector3();
+
+function launch(){
+ const v=2.6+power*3.2;const yaw=aim;
+ const vel=new THREE.Vector3(Math.sin(yaw)*Math.cos(ELEV),Math.sin(ELEV),-Math.cos(yaw)*Math.cos(ELEV)).multiplyScalar(v);
+ const m=paperBall();m.position.copy(LAUNCH);scene.add(m);
+ ball={m,vel,state:'fly',prevY:LAUNCH.y,life:0,spin:new THREE.Vector3(Math.random()*8,Math.random()*8,0)};balls.push(ball);
+ left--;sfx.whoosh();say('throw');hud();
+ if(ev&&ev.type==='boss'&&ev.on){caught();}
+}
+// 命中判定一律在「目標的區域座標」做：目標會動、會轉都不用改公式
+function stepBall(b,dt){
+ if(b.state==='done')return;b.life+=dt;
+ const r=meta.r,rimY=meta.rimY,outer=meta.outerR,rimR=(r+outer)/2;
+ if(b.state==='fly'){b.vel.y-=G*dt;b.vel.x+=wind*dt;b.vel.multiplyScalar(1-.08*dt);}
+ b.m.position.addScaledVector(b.vel,dt);b.m.rotation.x+=b.spin.x*dt;b.m.rotation.y+=b.spin.y*dt;
+ const p=tmp.copy(b.m.position).sub(target.position);const d=Math.hypot(p.x,p.z)||1e-6;
+ if(b.state==='fly'){
+  // 1) 從杯口上方往下穿過杯口平面，且在內徑內 → 進球
+  if(b.prevY>rimY&&p.y<=rimY&&d<r-BALL_R*.3){b.state='in';made++;sfx.score();say(made>=L.need?'great':'in');toast(['進了！','漂亮！','Nice！'][made%3]);hud();}
+  else{
+   // 2) 撞到杯緣（圓環）→ 沿法線反彈
+   const rx=p.x/d*rimR,rz=p.z/d*rimR;const nx=p.x-rx,ny=p.y-rimY,nz=p.z-rz;const nd=Math.hypot(nx,ny,nz);
+   if(nd<BALL_R+.008){const n=new THREE.Vector3(nx,ny,nz).divideScalar(nd);const vn=b.vel.dot(n);
+    if(vn<0){b.vel.addScaledVector(n,-1.6*vn).multiplyScalar(.6);sfx.clang();}b.m.position.addScaledVector(n,BALL_R+.008-nd);}
+   // 3) 撞到外壁
+   else if(p.y<rimY&&p.y>0&&d<outer+BALL_R&&d>r){const n=new THREE.Vector3(p.x/d,0,p.z/d);const vn=b.vel.dot(n);if(vn<0){b.vel.addScaledVector(n,-1.5*vn).multiplyScalar(.6);sfx.clang();}
+    b.m.position.x=target.position.x+n.x*(outer+BALL_R);b.m.position.z=target.position.z+n.z*(outer+BALL_R);}
+  }
+  // 4) 地板
+  if(b.m.position.y<BALL_R){b.m.position.y=BALL_R;b.vel.y*=-.3;b.vel.x*=.6;b.vel.z*=.6;b.spin.multiplyScalar(.6);
+   if(Math.abs(b.vel.y)<.25){b.state='done';if(b.life<4){say('miss');toast('差一點……');}}}
+  if(b.life>5||Math.abs(b.m.position.x)>1.2||b.m.position.z<-2.9)b.state='done';
+ }else if(b.state==='in'){   // 在杯子裡：限制在內徑、掉到底就停，並跟著杯子一起移動
+  b.vel.y-=G*dt;b.vel.x*=.9;b.vel.z*=.9;
+  if(d>r-BALL_R){b.m.position.x=target.position.x+p.x/d*(r-BALL_R);b.m.position.z=target.position.z+p.z/d*(r-BALL_R);}
+  const floorY=Math.min(rimY-BALL_R,.02+BALL_R+balls.filter(x=>x.state==='rest').length*.012);
+  if(p.y<floorY){b.m.position.y=floorY;b.state='rest';b.local=new THREE.Vector3().subVectors(b.m.position,target.position);}
+ }
+ b.prevY=p.y;
+}
+
+// 拋物線預測（第 1 關的提示）
+const dots=new THREE.Group();for(let i=0;i<14;i++){const s=new THREE.Mesh(new THREE.SphereGeometry(.008,8,6),new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.7}));dots.add(s);}scene.add(dots);
+function drawHint(){dots.visible=state==='play'&&L.hint&&!ball;if(!dots.visible)return;
+ const v=2.6+power*3.2,vel=new THREE.Vector3(Math.sin(aim)*Math.cos(ELEV),Math.sin(ELEV),-Math.cos(aim)*Math.cos(ELEV)).multiplyScalar(v);
+ const p=LAUNCH.clone();dots.children.forEach((s,i)=>{for(let k=0;k<4;k++){vel.y-=G*.012;vel.x+=wind*.012;p.addScaledVector(vel,.012);}s.position.copy(p);s.visible=p.y>0;});}
+
+// ================================================================ ④ 事件
+// 每個事件 = {type, at(剩幾球時觸發), on, t}；新增事件只要在 startEvent/updateEvent 加一個分支
+let ev=null,evQueue=[];
+function scheduleEvents(){const types=QS.get('ev')?QS.get('ev').split(','):L.events;
+ evQueue=types.map((type,i)=>({type,at:L.throws-1-i*2}));ev=null;}
+function startEvent(e){
+ if(e.type==='fan'){wind=(Math.random()<.5?-1:1)*(.9+li*.25);say('fan');toast('誰開電風扇啦！');   // 持續型事件：設定完就結束，風一直吹
+  $('#wind').textContent=wind<0?'💨 ←← 風 '+Math.abs(wind).toFixed(1):'風 '+wind.toFixed(1)+' →→ 💨';ev=null;}
+ if(e.type==='boss'){ev={type:'boss',t:0,on:false,dur:3.2};}}
+function updateEvent(dt){
+ if(!ev){if(evQueue.length&&left<=evQueue[0].at&&!ball)startEvent(evQueue.shift());return;}
+ ev.t+=dt;
+ if(ev.type==='boss'){
+  if(!ev.on&&ev.t>.2){ev.on=true;ev.t=0;$('#boss').style.opacity=1;say('boss');toast('老闆來了！不要丟！');}
+  else if(ev.on&&ev.t>ev.dur){$('#boss').style.opacity=0;toast('呼，走了');ev=null;}}
+}
+function caught(){left=Math.max(0,left-1);hud();say('caught');toast('被抓到！沒收一球');$('#boss').style.opacity=0;ev=null;}
+
+// ================================================================ ⑤ 音訊（程式合成音樂＋音效，配音是預錄 mp3，缺檔不會壞）
+let ac=null,master=null,muted=false;const VO={};
+const VOICES=['throw','in','great','miss','fan','boss','caught','win','lose'];
+function audio(){if(ac){if(ac.state==='suspended')ac.resume();return;}
+ try{ac=new AudioContext();}catch(e){return;}master=ac.createGain();master.gain.value=.18;master.connect(ac.destination);
+ VOICES.forEach(async n=>{try{const r=await fetch('voice/'+n+'.mp3');if(r.ok)VO[n]=await ac.decodeAudioData(await r.arrayBuffer());}catch(e){}});
+ startMusic();}
+let voCool=0;function say(n,force){if(!ac||muted||!VO[n]||(!force&&voCool>0))return;const s=ac.createBufferSource();s.buffer=VO[n];s.connect(ac.destination);s.start();voCool=VO[n].duration+.2;}
+function tone(f,dur,type='sine',g=.3,when=0){if(!ac)return;const t0=ac.currentTime+when,o=ac.createOscillator(),v=ac.createGain();o.type=type;o.frequency.setValueAtTime(f,t0);v.gain.setValueAtTime(g,t0);v.gain.exponentialRampToValueAtTime(.001,t0+dur);o.connect(v).connect(ac.destination);o.start(t0);o.stop(t0+dur+.02);}
+const sfx={whoosh(){tone(500,.15,'triangle',.15);tone(250,.2,'triangle',.1,.05);},clang(){tone(1400,.25,'square',.08);tone(2100,.2,'sine',.08);},
+ score(){[660,880,1320].forEach((f,i)=>tone(f,.18,'triangle',.2,i*.08));}};
+function startMusic(){const BASS=[0,0,7,0,5,0,3,5],CH=[[0,3,7],[5,8,12],[3,7,10],[7,10,14]];let step=0,nextT=ac.currentTime+.1;
+ setInterval(()=>{const bpm=state==='play'?(ev&&ev.on?132:96+li*6):84,spb=60/bpm/2;
+  while(nextT<ac.currentTime+.15){const root=45,s=step%16,chord=CH[Math.floor(step/16)%4];
+   const o=ac.createOscillator(),g=ac.createGain();o.type='triangle';o.frequency.value=440*2**((root+chord[0]+BASS[s%8]-69)/12);
+   g.gain.setValueAtTime(.35,nextT);g.gain.exponentialRampToValueAtTime(.001,nextT+spb*.9);o.connect(g).connect(master);o.start(nextT);o.stop(nextT+spb);
+   if(s%4===0){const k=ac.createOscillator(),kg=ac.createGain();k.frequency.setValueAtTime(140,nextT);k.frequency.exponentialRampToValueAtTime(45,nextT+.1);kg.gain.setValueAtTime(.6,nextT);kg.gain.exponentialRampToValueAtTime(.001,nextT+.2);k.connect(kg).connect(master);k.start(nextT);k.stop(nextT+.22);}
+   if(s%2===1){const e=ac.createOscillator(),eg=ac.createGain();e.type='square';e.frequency.value=440*2**((root+24+chord[(s>>1)%3]-69)/12);eg.gain.setValueAtTime(.05,nextT);eg.gain.exponentialRampToValueAtTime(.001,nextT+spb*.6);e.connect(eg).connect(master);e.start(nextT);e.stop(nextT+spb);}
+   nextT+=spb;step++;}},30);}
+$('#mute').addEventListener('pointerdown',e=>{e.stopPropagation();audio();muted=!muted;master.gain.value=muted?0:.18;$('#mute').textContent=muted?'🔇':'🔊';});
+
+// ================================================================ ⑥ 輸入、UI、流程
+const coarse=matchMedia('(pointer:coarse)').matches;if(coarse)$('#hold').style.display='block';
+let dragX=null;
+addEventListener('pointermove',e=>{if(state!=='play')return;
+ if(e.pointerType==='mouse')aim=clamp((e.clientX/innerWidth-.5)*1.1,-.5,.5);
+ else if(dragX!==null){aim=clamp(aim+(e.clientX-dragX)/innerWidth*.9,-.5,.5);dragX=e.clientX;}});
+renderer.domElement.addEventListener('pointerdown',e=>{audio();if(e.pointerType==='mouse')beginCharge();else dragX=e.clientX;});
+addEventListener('pointerup',e=>{if(e.pointerType==='mouse')endCharge();else dragX=null;});
+$('#hold').addEventListener('pointerdown',e=>{e.stopPropagation();audio();beginCharge();$('#hold').classList.add('on');});
+$('#hold').addEventListener('pointerup',e=>{e.stopPropagation();endCharge();$('#hold').classList.remove('on');});
+addEventListener('keydown',e=>{if(e.code==='Space'&&!e.repeat){audio();beginCharge();}if(e.code==='ArrowLeft')aim=clamp(aim-.04,-.5,.5);if(e.code==='ArrowRight')aim=clamp(aim+.04,-.5,.5);});
+addEventListener('keyup',e=>{if(e.code==='Space')endCharge();});
+function beginCharge(){if(state!=='play'||ball||left<=0)return;charging=true;powT=0;}
+function endCharge(){if(!charging)return;charging=false;launch();}
+
+let toastT=0;function toast(s){$('#toast').textContent=s;$('#toast').style.opacity=1;toastT=1.3;}
+function hud(){$('#lvl').textContent=L.name;$('#made').textContent=made;$('#need').textContent=L.need;$('#left').textContent=left;}
+function show(h){$('#msg').innerHTML=h;$('#msg').classList.remove('hidden');}
+function menu(){state='menu';show(`<h1>🗑️ 紙團投籃王</h1><p>移動滑鼠瞄準（手機：左右拖曳）<br>按住滑鼠／空白鍵／蓄力鈕，力道條會上下跑，<br>放開就丟出去。小心電風扇和老闆！</p><button id="go">開始上班</button>`);
+ $('#go').onclick=()=>{audio();start(+(QS.get('lv')||0));};}
+async function start(i){li=i;L=LEVELS[i];meta=META[L.target];
+ if(target)scene.remove(target);balls.forEach(b=>scene.remove(b.m));balls=[];ball=null;
+ target=await glb(meta.file);target.position.set(0,0,-L.dist);scene.add(target);
+ made=0;left=L.throws;wind=0;aim=0;power=0;$('#wind').textContent='';$('#boss').style.opacity=0;scheduleEvents();
+ state='play';$('#msg').classList.add('hidden');hud();toast(L.intro);}
+function finish(){state='result';const pass=made>=L.need,last=li===LEVELS.length-1;
+ const stars='⭐'.repeat(clamp(made-L.need+1,0,3))||'—';
+ if(pass&&last)say('win',true);else if(!pass)say('lose',true);
+ show(`<h1>${pass?(last?'🏆 全破！你是投籃王！':'過關！'):'沒過……'}</h1><p>投進 ${made} / ${L.throws}（需要 ${L.need}）<br>${stars}</p>
+ <button id="go">${pass?(last?'再玩一次':'下一關'):'再試一次'}</button>`);
+ $('#go').onclick=()=>{if(!pass)start(li);else if(last)menu();else start(li+1);};}
+
+// ================================================================ 主迴圈
+const clock=new THREE.Clock();
+function frame(){const dt=Math.min(clock.getDelta(),.033);t+=dt;voCool-=dt;
+ if(state==='play'){
+  if(charging){powT+=dt;power=.5-.5*Math.cos(powT*Math.PI*(1.1+li*.25));}   // 力道條來回跑，越後面越快
+  $('#power i').style.height=(power*100)+'%';
+  if(L.moving)target.position.x=Math.sin(t*1.3)*L.moving;
+  updateEvent(dt);
+  for(const b of balls){for(let k=0;k<4;k++)stepBall(b,dt/4);if(b.state==='rest')b.m.position.copy(target.position).add(b.local);}
+  if(ball&&ball.state!=='fly'){if(next===0)next=t+.6;if(t>next){ball=null;next=0;if(left<=0)setTimeout(finish,500);}}
+ }
+ drawHint();
+ if(toastT>0){toastT-=dt;if(toastT<=0)$('#toast').style.opacity=0;}
+ window.game={state,made,left,level:li,ev:ev&&ev.type};
+ renderer.render(scene,camera);requestAnimationFrame(frame);}
+menu();frame();window.__ok=true;
+</script></body></html>

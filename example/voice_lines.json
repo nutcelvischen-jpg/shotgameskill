@@ -1,0 +1,14 @@
+{
+  "model": "google/gemini-3.8-flash-tts",
+  "lines": {
+    "throw":  {"voice": "Puck", "text": "[comedic, cartoonish, cocky] 看我的！"},
+    "in":     {"voice": "Puck", "text": "[comedic, cartoonish, excited] 進了！"},
+    "great":  {"voice": "Puck", "text": "[comedic, cartoonish, over-the-top proud, like a sports announcer] 三分球！！"},
+    "miss":   {"voice": "Puck", "text": "[comedic, cartoonish, dramatically disappointed] 啊……差一點……"},
+    "fan":    {"voice": "Puck", "text": "[comedic, cartoonish, annoyed] 欸！誰開電風扇啦！"},
+    "boss":   {"voice": "Kore", "text": "[whispering, panicked, comedic] 老闆來了！快裝忙！"},
+    "caught": {"voice": "Charon", "text": "[stern boss, slow, comedic deadpan] 上班時間……在幹嘛？"},
+    "win":    {"voice": "Puck", "text": "[comedic, cartoonish, triumphant shouting] 我是辦公室投籃王！！讚！"},
+    "lose":   {"voice": "Puck", "text": "[comedic, cartoonish, sulking] 今天手感不好啦……"}
+  }
+}
